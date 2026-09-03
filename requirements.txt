@@ -1,0 +1,7 @@
+# Installed on the Glue job via --additional-python-modules (NOT bundled into
+# the common/ zip -- see README.md). boto3 and pyspark/awsglue ship with the
+# Glue runtime already and are listed here only for local development
+# (e.g. running `pip install -r requirements.txt` in a venv to get IDE
+# autocomplete / run unit tests against common/ without a real Glue job).
+requests>=2.31.0
+boto3>=1.34.0
