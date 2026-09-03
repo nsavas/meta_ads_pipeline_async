@@ -132,7 +132,6 @@ METRIC_FIELD_SPECS = [
     ("inline_link_clicks", "inline_link_clicks", "bigint"),
     ("inline_post_engagement", "inline_post_engagement", "bigint"),
     ("actions", "actions_json", "json"),
-    ("cost_per_action_type", "cost_per_action_type_json", "json"),
     ("video_play_actions", "video_play_actions_json", "json"),
     ("video_p25_watched_actions", "video_p25_watched_actions_json", "json"),
     ("video_p50_watched_actions", "video_p50_watched_actions_json", "json"),

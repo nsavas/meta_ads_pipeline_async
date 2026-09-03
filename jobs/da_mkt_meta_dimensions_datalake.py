@@ -202,7 +202,7 @@ from meta_schema import build_table
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("da_mkt_meta_dimension_datalake")
+logger = logging.getLogger("da_mkt_meta_dimensions_datalake")
 
 
 # --------------------------------------------------------------------------

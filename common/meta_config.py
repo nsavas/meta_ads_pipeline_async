@@ -14,7 +14,7 @@ GRAPH_API_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 # async report's results).
 DEFAULT_PAGE_SIZE = 100
 
-# Page size for *full-object* listings -- da_mkt_meta_dimension_datalake.py's
+# Page size for *full-object* listings -- da_mkt_meta_dimensions_datalake.py's
 # three list_entities() calls, which request every field on the Campaign
 # (39 fields), AdSet (62), and Ad (34) objects, several of which are
 # non-trivial nested objects (promoted_object, issues_info, source_campaign,
@@ -30,7 +30,7 @@ DEFAULT_PAGE_SIZE = 100
 # request-cost throttle, not a data/permissions issue with a specific
 # campaign. Keep this well below DEFAULT_PAGE_SIZE. On very large accounts
 # (5,500+ ads), this alone wasn't enough -- see
-# da_mkt_meta_dimension_datalake.py's note on the heavy nested fields
+# da_mkt_meta_dimensions_datalake.py's note on the heavy nested fields
 # trimmed from AD_FIELD_SPECS, which is what actually resolved it there:
 # the throttle behaves like a budget on total data pulled, so a smaller
 # page size only spreads the same total cost across more requests.

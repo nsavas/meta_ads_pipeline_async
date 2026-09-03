@@ -52,7 +52,7 @@ Design notes specific to the campaign level:
   carry it), but there's no campaign status field on the Insights edge --
   status lives on the Campaign object itself, not point-in-time insights
   rows, and changes over time in a way a historical daily row can't
-  meaningfully snapshot. See da_mkt_meta_dimension_datalake.py for
+  meaningfully snapshot. See da_mkt_meta_dimensions_datalake.py for
   current campaign status.
 """
 
@@ -97,7 +97,6 @@ METRIC_FIELD_SPECS = [
     ("inline_link_clicks", "inline_link_clicks", "bigint"),
     ("inline_post_engagement", "inline_post_engagement", "bigint"),
     ("actions", "actions_json", "json"),
-    ("cost_per_action_type", "cost_per_action_type_json", "json"),
     ("video_play_actions", "video_play_actions_json", "json"),
     ("video_p25_watched_actions", "video_p25_watched_actions_json", "json"),
     ("video_p50_watched_actions", "video_p50_watched_actions_json", "json"),

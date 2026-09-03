@@ -60,10 +60,10 @@ Design notes specific to the ad level:
   2026-08-19. The metric set mirrors the Pinterest ad-level job's shape
   (spend, impressions, clicks, engagement, conversions, cost-per-click,
   cpm, ctr, video funnel) as closely as Meta's data model allows -- but
-  `actions`/`cost_per_action_type` and every video_p*_watched_actions field
-  are Meta list<AdsActionStats> types (a list of {action_type, value} pairs
-  whose action_type values vary by campaign objective), not flat named
-  numbers the way Pinterest's LEADS/TOTAL_CONVERSIONS/TOTAL_VIDEO_P25_COMBINED
+  `actions` and every video_p*_watched_actions field are Meta
+  list<AdsActionStats> types (a list of {action_type, value} pairs whose
+  action_type values vary by campaign objective), not flat named numbers
+  the way Pinterest's LEADS/TOTAL_CONVERSIONS/TOTAL_VIDEO_P25_COMBINED
   were. They're stored as JSON rather than picked apart into one named
   metric, since there's no single action_type that's universally "the"
   conversion/lead metric across every campaign objective -- query them with
@@ -96,6 +96,12 @@ logger = logging.getLogger("da_mkt_meta_ad_performance_datalake")
 
 LEVEL = "ad"
 
+# `cost_per_action_type` is deliberately NOT requested (dropped 2026-09-03).
+# It's the per-action-type cost counterpart to `actions`, and is derivable
+# from data already in the table (spend / the matching action_type's value),
+# so carrying it as a second list-of-pairs JSON blob on every row was
+# redundant weight on the request and in storage.
+#
 # Metric fields, deliberately kept identical across meta_ads/, meta_campaigns/,
 # meta_ad_sets/, meta_ads_dma/, and meta_ads_demographics/ jobs -- same
 # invariant the sibling Pinterest project keeps for ANALYTICS_COLUMNS, so
@@ -114,7 +120,6 @@ METRIC_FIELD_SPECS = [
     ("inline_link_clicks", "inline_link_clicks", "bigint"),
     ("inline_post_engagement", "inline_post_engagement", "bigint"),
     ("actions", "actions_json", "json"),
-    ("cost_per_action_type", "cost_per_action_type_json", "json"),
     ("video_play_actions", "video_play_actions_json", "json"),
     ("video_p25_watched_actions", "video_p25_watched_actions_json", "json"),
     ("video_p50_watched_actions", "video_p50_watched_actions_json", "json"),

@@ -88,7 +88,7 @@ from meta_schema import build_table
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("da_mkt_meta_ad_demographic_performance_datalake")
+logger = logging.getLogger("da_mkt_meta_ad_demographics_performance_datalake")
 
 LEVEL = "ad"
 BREAKDOWNS = ["age", "gender"]
@@ -109,7 +109,6 @@ METRIC_FIELD_SPECS = [
     ("inline_link_clicks", "inline_link_clicks", "bigint"),
     ("inline_post_engagement", "inline_post_engagement", "bigint"),
     ("actions", "actions_json", "json"),
-    ("cost_per_action_type", "cost_per_action_type_json", "json"),
     ("video_play_actions", "video_play_actions_json", "json"),
     ("video_p25_watched_actions", "video_p25_watched_actions_json", "json"),
     ("video_p50_watched_actions", "video_p50_watched_actions_json", "json"),
