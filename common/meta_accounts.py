@@ -70,7 +70,7 @@ def list_entities(ad_account_id: str, access_token: str, entity_path: str, field
       default, unlike Pinterest's list endpoints.
     page_size: defaults to DEFAULT_PAGE_SIZE (100), fine for the ID-only
       calls list_entity_ids() makes. Callers requesting many/wide fields per
-      object (see meta_dimensions_to_iceberg_glue_job.py) should pass
+      object (see da_mkt_meta_dimension_datalake.py) should pass
       meta_config.DETAIL_PAGE_SIZE instead -- see that constant's docstring
       for why (Meta's cost-based throttle on large full-object pages).
     filtering: optional list of Marketing API filter dicts, e.g.
@@ -79,7 +79,7 @@ def list_entities(ad_account_id: str, access_token: str, entity_path: str, field
       parameter -- this filters which entities are returned by the edge
       itself (unlike `date_preset`/`time_range`, which only scope computed
       stats fields and don't affect which objects come back). See
-      meta_dimensions_to_iceberg_glue_job.py's CREATED_TIME filtering notes.
+      da_mkt_meta_dimension_datalake.py's CREATED_TIME filtering notes.
     """
     params = {"fields": ",".join(fields), "limit": page_size}
     if filtering:

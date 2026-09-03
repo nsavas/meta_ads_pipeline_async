@@ -2,8 +2,8 @@
 AWS Glue job: pull the full Campaign, Ad Set, and Ad dimension/metadata
 objects from Meta's Marketing API (Graph API) -- name, status, budget,
 targeting, creative, etc. -- and write them to three Iceberg tables in S3.
-No performance metrics here; see meta_ads_to_iceberg_glue_job.py,
-meta_campaigns_to_iceberg_glue_job.py, and meta_ad_sets_to_iceberg_glue_job.py
+No performance metrics here; see da_mkt_meta_ad_performance_datalake.py,
+da_mkt_meta_campaign_performance_datalake.py, and da_mkt_meta_ad_set_performance_datalake.py
 for those.
 
 Depends on the flat .py modules in ../common/ -- see ../README.md for how
@@ -202,7 +202,7 @@ from meta_schema import build_table
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("meta_dimensions_to_iceberg")
+logger = logging.getLogger("da_mkt_meta_dimension_datalake")
 
 
 # --------------------------------------------------------------------------

@@ -51,12 +51,12 @@ meta_ads_pipeline_async/
 │   ├── meta_dates.py               rolling-window date-range resolution + chunking
 │   └── meta_glue_args.py           getResolvedOptions wrapper that supports optional args
 ├── jobs/
-│   ├── meta_ads_to_iceberg_glue_job.py                 async
-│   ├── meta_campaigns_to_iceberg_glue_job.py           async
-│   ├── meta_ad_sets_to_iceberg_glue_job.py             async
-│   ├── meta_ads_dma_to_iceberg_glue_job.py             async -- ad-level performance broken down by geographic market
-│   ├── meta_ads_demographics_to_iceberg_glue_job.py    async -- ad-level performance broken down by age x gender
-│   └── meta_dimensions_to_iceberg_glue_job.py          SYNC  -- campaign/ad set/ad metadata (no metrics)
+│   ├── da_mkt_meta_ad_performance_datalake.py              async
+│   ├── da_mkt_meta_campaign_performance_datalake.py        async
+│   ├── da_mkt_meta_ad_set_performance_datalake.py          async
+│   ├── da_mkt_meta_ad_dma_performance_datalake.py          async -- ad-level performance broken down by geographic market
+│   ├── da_mkt_meta_ad_demographic_performance_datalake.py  async -- ad-level performance broken down by age x gender
+│   └── da_mkt_meta_dimension_datalake.py                   SYNC  -- campaign/ad set/ad metadata (no metrics)
 ├── build_deps.ps1 / build_deps.sh   zip common/'s contents (flat) for --extra-py-files
 ├── requirements.txt
 └── README.md
@@ -108,13 +108,13 @@ in `jobs/` for the full list):
 | `--START_DATE` / `--END_DATE` | no* | explicit backfill range; omit for the rolling incremental window |
 | `--LOOKBACK_DAYS` | no* | default 14; width of the rolling window when dates are omitted |
 
-\* All six jobs take all three optional date args. `meta_dimensions_to_iceberg_glue_job.py`
+\* All six jobs take all three optional date args. `da_mkt_meta_dimension_datalake.py`
 started out with none of them (it's not time-series data), but as of
 2026-09-01 it also filters by created_time using this same rolling-window/
 backfill mechanism -- see "created_time filtering + upsert" below for why,
 and for an important backfill note before relying on the default window.
 
-\*\* `meta_dimensions_to_iceberg_glue_job.py` writes three tables in one
+\*\* `da_mkt_meta_dimension_datalake.py` writes three tables in one
 run, so instead of a single `--ICEBERG_TABLE` it takes three:
 `--ICEBERG_TABLE_CAMPAIGNS`, `--ICEBERG_TABLE_AD_SETS`, `--ICEBERG_TABLE_ADS`.
 
@@ -122,12 +122,12 @@ Suggested table names, one per job:
 
 | Job | Table(s) |
 |---|---|
-| `meta_ads_to_iceberg_glue_job.py` | `meta_ad_performance` |
-| `meta_campaigns_to_iceberg_glue_job.py` | `meta_campaign_performance` |
-| `meta_ad_sets_to_iceberg_glue_job.py` | `meta_ad_set_performance` |
-| `meta_ads_dma_to_iceberg_glue_job.py` | `meta_ad_market_performance` |
-| `meta_ads_demographics_to_iceberg_glue_job.py` | `meta_ad_demographics_performance` |
-| `meta_dimensions_to_iceberg_glue_job.py` | `meta_campaign_dim`, `meta_ad_set_dim`, `meta_ad_dim` |
+| `da_mkt_meta_ad_performance_datalake.py` | `meta_ad_performance` |
+| `da_mkt_meta_campaign_performance_datalake.py` | `meta_campaign_performance` |
+| `da_mkt_meta_ad_set_performance_datalake.py` | `meta_ad_set_performance` |
+| `da_mkt_meta_ad_dma_performance_datalake.py` | `meta_ad_market_performance` |
+| `da_mkt_meta_ad_demographic_performance_datalake.py` | `meta_ad_demographics_performance` |
+| `da_mkt_meta_dimension_datalake.py` | `meta_campaign_dim`, `meta_ad_set_dim`, `meta_ad_dim` |
 
 Whenever `common/` changes, re-run `build_deps.sh`/`.ps1` and re-upload the
 zip -- Glue doesn't pick up changes to an S3 object automatically on its
@@ -257,7 +257,7 @@ DMA is the most important breakdown.
 Pinterest's ad-level DMA breakdown (`pinterest_ads_dma_to_iceberg_glue_job.py`)
 maps directly onto Nielsen's classic media markets. Meta had the same
 concept -- a `dma` breakdown value on the Insights API -- but the evidence
-gathered while building `meta_ads_dma_to_iceberg_glue_job.py` was genuinely
+gathered while building `da_mkt_meta_ad_dma_performance_datalake.py` was genuinely
 mixed:
 
 - Meta's own live breakdowns reference page (fetched 2026-08-19) still
@@ -272,7 +272,7 @@ mixed:
 
 Convergent, independent operational evidence from four production vendors
 (who'd have discovered this from real API calls actually failing) outweighs
-a docs page that may simply not have been updated yet. **`meta_ads_dma_to_iceberg_glue_job.py`
+a docs page that may simply not have been updated yet. **`da_mkt_meta_ad_dma_performance_datalake.py`
 defaults to `comscore_market`** (the `GEO_BREAKDOWN` constant at the top of
 that file), not legacy `dma`.
 
@@ -299,7 +299,7 @@ breakdowns of the same total (summing across both silently doubles every
 metric -- see the sibling project's `pinterest_ads_gender_to_iceberg_glue_job.py`/
 `pinterest_ads_age_to_iceberg_glue_job.py` for that whole story), Meta's
 breakdowns reference docs explicitly list `age+gender` as a **permitted
-combination** -- a true cross-tab. `meta_ads_demographics_to_iceberg_glue_job.py`
+combination** -- a true cross-tab. `da_mkt_meta_ad_demographic_performance_datalake.py`
 requests both in one call and writes one table with grain
 `(ad_id, date, age, gender)`. Every row is already scoped to one
 `(age, gender)` pair, so `SUM(spend)` for an `(ad_id, stat_date)` just
@@ -359,7 +359,7 @@ before this one:
    exactly what Meta's message says not to do.
 
 Fix: `meta_config.DETAIL_PAGE_SIZE` (25, vs. the default 100) for
-`meta_dimensions_to_iceberg_glue_job.py`'s three full-object listings only --
+`da_mkt_meta_dimension_datalake.py`'s three full-object listings only --
 the performance jobs' ID-only/insights calls stay at the default, since
 they're far cheaper per object and weren't implicated.
 
@@ -392,7 +392,7 @@ have; requesting it for any other account fails outright, no matter the
 page size or pacing.
 
 Fix: `contextual_bundling_spec` was dropped from
-`meta_dimensions_to_iceberg_glue_job.py`'s `AD_SET_FIELD_SPECS` (62 fields
+`da_mkt_meta_dimension_datalake.py`'s `AD_SET_FIELD_SPECS` (62 fields
 now, not 63) -- there's no way to request it unconditionally for every
 account. If your accounts are confirmed enrolled in that program, it can be
 added back; see the field-spec comment in that job for the one-line change.
@@ -419,7 +419,7 @@ field with only `special_ad_categories` also removed (succeeded) -- it's
 requested normally.
 
 Fix: `special_ad_categories` was dropped from
-`meta_dimensions_to_iceberg_glue_job.py`'s `AD_FIELD_SPECS` (38 fields now,
+`da_mkt_meta_dimension_datalake.py`'s `AD_FIELD_SPECS` (38 fields now,
 not 39). If your app is confirmed enrolled in the Special Ad Category
 program, it can be added back; see the field-spec comment in that job for
 the one-line change.
@@ -448,7 +448,7 @@ the current use case; if you need one later, consider a narrower per-ad
 follow-up call instead of carrying it on every row of a 5,500+-row pull.
 
 Fix: those four fields were dropped from
-`meta_dimensions_to_iceberg_glue_job.py`'s `AD_FIELD_SPECS` (34 fields now,
+`da_mkt_meta_dimension_datalake.py`'s `AD_FIELD_SPECS` (34 fields now,
 not 38). See the field-spec comment in that job to add any back if a future
 use case needs one -- just be aware of the cost tradeoff on large accounts.
 
@@ -477,7 +477,7 @@ first real run that the filter is actually narrowing results (check the
 fetched counts against what you'd expect) rather than being silently
 ignored by the API.
 
-This forced a second, more consequential change: `meta_dimensions_to_iceberg_glue_job.py`
+This forced a second, more consequential change: `da_mkt_meta_dimension_datalake.py`
 used to do a full `CREATE OR REPLACE TABLE` every run specifically so a
 campaign/ad set/ad deleted on Meta's side would disappear from the table
 (see "Ad's heavy nested fields are trimmed" above and the job's own

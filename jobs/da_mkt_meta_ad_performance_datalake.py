@@ -1,43 +1,12 @@
 """
-AWS Glue job: pull ad-level performance data broken down by geographic
-market from Meta's Marketing API (Graph API Insights edge) and upsert it
-into an Iceberg table in S3.
-
-*** READ THIS BEFORE DEPLOYING -- Nielsen DMA vs. Comscore Market ***
-Pinterest's DMA breakdown maps cleanly to Nielsen's classic 210 US media
-markets (see the sibling pinterest_ads_dma_to_iceberg_glue_job.py). Meta's
-`dma` breakdown was the same concept, but the evidence gathered while
-building this job (2026-08-19) is genuinely mixed:
-  - Meta's own live Marketing API breakdowns reference page still lists
-    `dma` as a currently valid breakdown, with no deprecation notice.
-  - Four independent production ETL vendors -- Fivetran, Airbyte, Rivery,
-    and Supermetrics -- all separately confirm the Nielsen `dma` breakdown
-    stopped returning results on 2026-06-22 (two months before this was
-    written), replaced by a new `comscore_market` breakdown. Rivery's own
-    changelog states it plainly: "Meta has fully retired Nielsen DMA across
-    its reporting... choose Comscore Market to retain geographic-level
-    reporting."
-Given that convergent, independent operational evidence from multiple
-production vendors (who'd have discovered this from real API calls
-failing) outweighs a docs page that may simply not have been updated yet,
-this job defaults to `comscore_market` -- GEO_BREAKDOWN below. If your
-account turns out to still support legacy `dma` (e.g. on an older API
-version, or if the retirement is more limited in scope than the vendor
-reports suggest), this is a one-constant change: set GEO_BREAKDOWN = "dma"
-and MARKET_COLUMN_COMMENT below no longer applies. Confirm against a real
-API call before relying on either in production -- this is exactly the kind
-of API-behavior nuance no OpenAPI spec exists to mechanically verify (see
-../README.md's "No OpenAPI spec for Meta" section).
+AWS Glue job: pull ad-level performance data from Meta's Marketing API
+(Graph API Insights edge) and upsert it into an Iceberg table in S3.
 
 Depends on the flat .py modules in ../common/ -- see ../README.md for how
-they're packaged and attached via --extra-py-files.
-
-This is a companion to meta_ads_to_iceberg_glue_job.py, not a replacement --
-same /{ad_account_id}/insights endpoint and level=ad, same asynchronous
-report flow (submit -> poll -> fetch, batched; see
-common/meta_async_insights.py), with a `breakdowns` parameter added.
-Produces a different grain of table: one row per (ad, date, market) instead
-of one row per (ad, date).
+they're packaged and attached via --extra-py-files. All auth, discovery,
+retry, date-range, and Iceberg-upsert logic lives there and is shared with
+the campaign- and ad-set-level jobs; this file only declares what's specific
+to the ad level: which fields to request, the row schema, and the merge key.
 
 Glue job parameters expected (set as job arguments):
 
@@ -48,7 +17,7 @@ Glue job parameters expected (set as job arguments):
   --AWS_REGION                e.g. us-east-1
   --ICEBERG_CATALOG           Glue Data Catalog name registered as an Iceberg catalog, e.g. "glue_catalog"
   --ICEBERG_DATABASE          target database name, e.g. "marketing"
-  --ICEBERG_TABLE             target table name, e.g. "meta_ad_market_performance"
+  --ICEBERG_TABLE             target table name, e.g. "meta_ad_performance"
   --ICEBERG_WAREHOUSE_PATH    s3://bucket/prefix for the Iceberg warehouse
 
 Optional job parameters:
@@ -69,22 +38,37 @@ Also pass, at the job level (not in this script):
 
 This script is written for Glue 4.0+ (Spark 3.3+, native Iceberg support).
 
-Design notes:
-- Meta's breakdown mechanism differs from Pinterest's: the breakdown value
-  isn't nested under a separate "targeting_value" sibling field the way
-  Pinterest's targeting_analytics rows work. Meta adds the breakdown value
-  directly into the row under a key matching the breakdown's own name (e.g.
-  requesting breakdowns=["comscore_market"] adds a "comscore_market" key to
-  every row, alongside the requested `fields`). GEO_BREAKDOWN is therefore
-  excluded from the `fields` request (API_FIELDS below) and passed via the
-  separate `breakdowns` parameter instead -- requesting it in both would be
-  redundant/invalid.
-- No separate reference/lookup table is needed here (unlike Pinterest's
-  pinterest_dma_reference_to_iceberg_glue_job.py for bare Nielsen codes) --
-  confirm on your first real pull whether comscore_market's values come back
-  as human-readable market names or as IDs needing a lookup; this wasn't
-  confirmable from documentation alone. If it turns out to be a bare code,
-  building a reference job mirroring the Pinterest one is the fix.
+Design notes specific to the ad level:
+- **Asynchronous reporting, not a synchronous GET.** This job submits one
+  async insights report job per account (POST /{ad_account_id}/insights ->
+  report_run_id), polls until every report finishes, then reads the rows --
+  see common/meta_async_insights.py for the flow and ../README.md for why
+  (Meta recommends async for large report volumes, and the synchronous
+  version of this pipeline was tripping the cost-based throttle on this
+  org's larger accounts). Submissions and status polls are issued as Graph
+  API batch calls, up to 50 sub-requests per HTTP round trip, rather than
+  one call per account.
+- One report per account, not one per ad. level=ad returns ad-level rows
+  for *every* ad in the account -- confirmed against Meta's Marketing API
+  docs on 2026-08-19. Unlike Pinterest, there's no "list every ad's ID
+  first, then batch analytics calls" step needed.
+- time_increment=1 requests daily rows (one row per ad per day) rather than
+  one aggregated total across the date range -- same shape Pinterest's
+  granularity=DAY produces.
+- Fields verified against Meta's live Ads Insights reference docs
+  (https://developers.facebook.com/docs/marketing-api/insights/) on
+  2026-08-19. The metric set mirrors the Pinterest ad-level job's shape
+  (spend, impressions, clicks, engagement, conversions, cost-per-click,
+  cpm, ctr, video funnel) as closely as Meta's data model allows -- but
+  `actions`/`cost_per_action_type` and every video_p*_watched_actions field
+  are Meta list<AdsActionStats> types (a list of {action_type, value} pairs
+  whose action_type values vary by campaign objective), not flat named
+  numbers the way Pinterest's LEADS/TOTAL_CONVERSIONS/TOTAL_VIDEO_P25_COMBINED
+  were. They're stored as JSON rather than picked apart into one named
+  metric, since there's no single action_type that's universally "the"
+  conversion/lead metric across every campaign objective -- query them with
+  Spark's `from_json`/Athena's `json_extract` for the action_type(s) that
+  matter for a given campaign.
 """
 
 import os
@@ -108,18 +92,16 @@ from meta_schema import build_table
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("meta_ads_dma_to_iceberg")
+logger = logging.getLogger("da_mkt_meta_ad_performance_datalake")
 
 LEVEL = "ad"
 
-# See the module docstring's Nielsen-DMA-vs-Comscore-Market section before
-# changing this.
-GEO_BREAKDOWN = "comscore_market"
-
 # Metric fields, deliberately kept identical across meta_ads/, meta_campaigns/,
-# meta_ad_sets/, meta_ads_dma/, and meta_ads_demographics/ jobs -- see
-# meta_ads_to_iceberg_glue_job.py for the full rationale. Verified against
-# Meta's live Ads Insights reference docs on 2026-08-19.
+# meta_ad_sets/, meta_ads_dma/, and meta_ads_demographics/ jobs -- same
+# invariant the sibling Pinterest project keeps for ANALYTICS_COLUMNS, so
+# summing this table's metrics up to the campaign level is comparable to
+# da_mkt_meta_campaign_performance_datalake.py's own rows. Verified against Meta's
+# live Ads Insights reference docs on 2026-08-19.
 METRIC_FIELD_SPECS = [
     ("spend", "spend", "double"),
     ("impressions", "impressions", "bigint"),
@@ -147,16 +129,12 @@ FIELD_SPECS = [
     ("adset_name", "ad_set_name", "string"),
     ("campaign_id", "campaign_id", "string"),
     ("campaign_name", "campaign_name", "string"),
-    (GEO_BREAKDOWN, "market", "string"),  # breakdown-derived -- see module docstring
     ("date_start", "stat_date", "date"),
 ] + METRIC_FIELD_SPECS
 
 SCHEMA, ICEBERG_COLUMNS, to_row = build_table(FIELD_SPECS)
-# GEO_BREAKDOWN is supplied via `breakdowns`, not `fields` -- requesting it
-# in both would be redundant/invalid, so it's excluded here.
-API_FIELDS = [f[0] for f in FIELD_SPECS if f[0] != GEO_BREAKDOWN]
-BREAKDOWNS = [GEO_BREAKDOWN]
-KEY_COLUMNS = ["ad_account_id", "ad_id", "market", "stat_date"]
+API_FIELDS = [f[0] for f in FIELD_SPECS]
+KEY_COLUMNS = ["ad_account_id", "ad_id", "stat_date"]
 PARTITION_EXPR = "days(stat_date)"
 
 REQUIRED_ARGS = [
@@ -203,19 +181,19 @@ def main():
         return
 
     start_date, end_date = resolve_date_range(args)
-    logger.info("Pulling Meta ad market (%s) insights for %s..%s across %d account(s)",
-                GEO_BREAKDOWN, start_date, end_date, len(ad_account_ids))
+    logger.info("Pulling Meta ad insights for %s..%s across %d account(s)",
+                start_date, end_date, len(ad_account_ids))
     ingested_at = datetime.now(timezone.utc)
 
     rows_by_account = run_insights_reports(ad_account_ids, LEVEL, start_date, end_date,
-                                           access_token, API_FIELDS, breakdowns=BREAKDOWNS)
+                                           access_token, API_FIELDS)
 
     all_rows = []
     for ad_account_id, insights in rows_by_account.items():
         for record in insights:
             all_rows.append(to_row(ad_account_id, record, ingested_at))
 
-    logger.info("Fetched %d ad-market-day rows across %d ad account(s)", len(all_rows), len(ad_account_ids))
+    logger.info("Fetched %d ad-day rows across %d ad account(s)", len(all_rows), len(ad_account_ids))
 
     if not all_rows:
         logger.info("No data returned for %s..%s, nothing to write", start_date, end_date)
@@ -224,7 +202,7 @@ def main():
 
     df = spark.createDataFrame(all_rows, schema=SCHEMA)
     upsert(spark, df, full_table_name, ICEBERG_COLUMNS, KEY_COLUMNS,
-           PARTITION_EXPR, temp_view_name="meta_ads_market_source")
+           PARTITION_EXPR, temp_view_name="meta_ads_source")
 
     job.commit()
 

@@ -1,12 +1,13 @@
 """
-AWS Glue job: pull ad-level performance data from Meta's Marketing API
+AWS Glue job: pull campaign-level performance data from Meta's Marketing API
 (Graph API Insights edge) and upsert it into an Iceberg table in S3.
 
 Depends on the flat .py modules in ../common/ -- see ../README.md for how
 they're packaged and attached via --extra-py-files. All auth, discovery,
 retry, date-range, and Iceberg-upsert logic lives there and is shared with
-the campaign- and ad-set-level jobs; this file only declares what's specific
-to the ad level: which fields to request, the row schema, and the merge key.
+the ad- and ad-set-level jobs; this file only declares what's specific to
+the campaign level: which fields to request, the row schema, and the merge
+key.
 
 Glue job parameters expected (set as job arguments):
 
@@ -17,7 +18,7 @@ Glue job parameters expected (set as job arguments):
   --AWS_REGION                e.g. us-east-1
   --ICEBERG_CATALOG           Glue Data Catalog name registered as an Iceberg catalog, e.g. "glue_catalog"
   --ICEBERG_DATABASE          target database name, e.g. "marketing"
-  --ICEBERG_TABLE             target table name, e.g. "meta_ad_performance"
+  --ICEBERG_TABLE             target table name, e.g. "meta_campaign_performance"
   --ICEBERG_WAREHOUSE_PATH    s3://bucket/prefix for the Iceberg warehouse
 
 Optional job parameters:
@@ -38,37 +39,21 @@ Also pass, at the job level (not in this script):
 
 This script is written for Glue 4.0+ (Spark 3.3+, native Iceberg support).
 
-Design notes specific to the ad level:
-- **Asynchronous reporting, not a synchronous GET.** This job submits one
-  async insights report job per account (POST /{ad_account_id}/insights ->
-  report_run_id), polls until every report finishes, then reads the rows --
-  see common/meta_async_insights.py for the flow and ../README.md for why
-  (Meta recommends async for large report volumes, and the synchronous
-  version of this pipeline was tripping the cost-based throttle on this
-  org's larger accounts). Submissions and status polls are issued as Graph
-  API batch calls, up to 50 sub-requests per HTTP round trip, rather than
-  one call per account.
-- One report per account, not one per ad. level=ad returns ad-level rows
-  for *every* ad in the account -- confirmed against Meta's Marketing API
-  docs on 2026-08-19. Unlike Pinterest, there's no "list every ad's ID
-  first, then batch analytics calls" step needed.
-- time_increment=1 requests daily rows (one row per ad per day) rather than
-  one aggregated total across the date range -- same shape Pinterest's
-  granularity=DAY produces.
-- Fields verified against Meta's live Ads Insights reference docs
-  (https://developers.facebook.com/docs/marketing-api/insights/) on
-  2026-08-19. The metric set mirrors the Pinterest ad-level job's shape
-  (spend, impressions, clicks, engagement, conversions, cost-per-click,
-  cpm, ctr, video funnel) as closely as Meta's data model allows -- but
-  `actions`/`cost_per_action_type` and every video_p*_watched_actions field
-  are Meta list<AdsActionStats> types (a list of {action_type, value} pairs
-  whose action_type values vary by campaign objective), not flat named
-  numbers the way Pinterest's LEADS/TOTAL_CONVERSIONS/TOTAL_VIDEO_P25_COMBINED
-  were. They're stored as JSON rather than picked apart into one named
-  metric, since there's no single action_type that's universally "the"
-  conversion/lead metric across every campaign objective -- query them with
-  Spark's `from_json`/Athena's `json_extract` for the action_type(s) that
-  matter for a given campaign.
+Design notes specific to the campaign level:
+- **Asynchronous reporting, not a synchronous GET** -- one async report job
+  per account, submitted and polled via batched Graph API calls. See
+  common/meta_async_insights.py for the flow, and
+  da_mkt_meta_ad_performance_datalake.py's docstring plus ../README.md for why.
+- One report per account, not one per campaign. level=campaign returns
+  campaign-level rows for *every* campaign in the account -- see
+  da_mkt_meta_ad_performance_datalake.py's docstring for the full explanation of
+  why this differs from Pinterest's list-then-batch pattern.
+- `objective` is included as dimensional context (Meta's insights rows do
+  carry it), but there's no campaign status field on the Insights edge --
+  status lives on the Campaign object itself, not point-in-time insights
+  rows, and changes over time in a way a historical daily row can't
+  meaningfully snapshot. See da_mkt_meta_dimension_datalake.py for
+  current campaign status.
 """
 
 import os
@@ -92,16 +77,14 @@ from meta_schema import build_table
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("meta_ads_to_iceberg")
+logger = logging.getLogger("da_mkt_meta_campaign_performance_datalake")
 
-LEVEL = "ad"
+LEVEL = "campaign"
 
 # Metric fields, deliberately kept identical across meta_ads/, meta_campaigns/,
-# meta_ad_sets/, meta_ads_dma/, and meta_ads_demographics/ jobs -- same
-# invariant the sibling Pinterest project keeps for ANALYTICS_COLUMNS, so
-# summing this table's metrics up to the campaign level is comparable to
-# meta_campaigns_to_iceberg_glue_job.py's own rows. Verified against Meta's
-# live Ads Insights reference docs on 2026-08-19.
+# meta_ad_sets/, meta_ads_dma/, and meta_ads_demographics/ jobs -- see
+# da_mkt_meta_ad_performance_datalake.py for the full rationale. Verified against
+# Meta's live Ads Insights reference docs on 2026-08-19.
 METRIC_FIELD_SPECS = [
     ("spend", "spend", "double"),
     ("impressions", "impressions", "bigint"),
@@ -123,18 +106,15 @@ METRIC_FIELD_SPECS = [
 ]
 
 FIELD_SPECS = [
-    ("ad_id", "ad_id", "string"),
-    ("ad_name", "ad_name", "string"),
-    ("adset_id", "ad_set_id", "string"),
-    ("adset_name", "ad_set_name", "string"),
     ("campaign_id", "campaign_id", "string"),
     ("campaign_name", "campaign_name", "string"),
+    ("objective", "objective", "string"),
     ("date_start", "stat_date", "date"),
 ] + METRIC_FIELD_SPECS
 
 SCHEMA, ICEBERG_COLUMNS, to_row = build_table(FIELD_SPECS)
 API_FIELDS = [f[0] for f in FIELD_SPECS]
-KEY_COLUMNS = ["ad_account_id", "ad_id", "stat_date"]
+KEY_COLUMNS = ["ad_account_id", "campaign_id", "stat_date"]
 PARTITION_EXPR = "days(stat_date)"
 
 REQUIRED_ARGS = [
@@ -181,7 +161,7 @@ def main():
         return
 
     start_date, end_date = resolve_date_range(args)
-    logger.info("Pulling Meta ad insights for %s..%s across %d account(s)",
+    logger.info("Pulling Meta campaign insights for %s..%s across %d account(s)",
                 start_date, end_date, len(ad_account_ids))
     ingested_at = datetime.now(timezone.utc)
 
@@ -193,7 +173,7 @@ def main():
         for record in insights:
             all_rows.append(to_row(ad_account_id, record, ingested_at))
 
-    logger.info("Fetched %d ad-day rows across %d ad account(s)", len(all_rows), len(ad_account_ids))
+    logger.info("Fetched %d campaign-day rows across %d ad account(s)", len(all_rows), len(ad_account_ids))
 
     if not all_rows:
         logger.info("No data returned for %s..%s, nothing to write", start_date, end_date)
@@ -202,7 +182,7 @@ def main():
 
     df = spark.createDataFrame(all_rows, schema=SCHEMA)
     upsert(spark, df, full_table_name, ICEBERG_COLUMNS, KEY_COLUMNS,
-           PARTITION_EXPR, temp_view_name="meta_ads_source")
+           PARTITION_EXPR, temp_view_name="meta_campaigns_source")
 
     job.commit()
 

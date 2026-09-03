@@ -1,16 +1,30 @@
 """
-AWS Glue job: pull ad set-level performance data from Meta's Marketing API
-(Graph API Insights edge) and upsert it into an Iceberg table in S3.
-
-An "ad set" is Meta's equivalent of Pinterest's "ad group" -- the layer
-between campaign and ad that holds targeting, budget, and schedule.
+AWS Glue job: pull ad-level performance data broken down by age and gender
+(as a combined cross-tab) from Meta's Marketing API (Graph API Insights
+edge) and upsert it into an Iceberg table in S3.
 
 Depends on the flat .py modules in ../common/ -- see ../README.md for how
-they're packaged and attached via --extra-py-files. All auth, discovery,
-retry, date-range, and Iceberg-upsert logic lives there and is shared with
-the ad- and campaign-level jobs; this file only declares what's specific to
-the ad set level: which fields to request, the row schema, and the merge
-key.
+they're packaged and attached via --extra-py-files.
+
+This is a companion to da_mkt_meta_ad_performance_datalake.py, not a replacement --
+same /{ad_account_id}/insights endpoint and level=ad, same asynchronous
+report flow (submit -> poll -> fetch, batched; see
+common/meta_async_insights.py), with a `breakdowns` parameter added.
+Produces a different grain of table: one row per (ad, date, age, gender)
+instead of one row per (ad, date).
+
+Unlike the sibling Pinterest project's gender/age jobs, this is ONE job
+producing a true age x gender cross-tab, not two separate single-dimension
+tables. Meta's breakdowns reference docs explicitly list age+gender as a
+*permitted combination* (https://developers.facebook.com/docs/marketing-api/insights/breakdowns/,
+fetched 2026-08-19) -- unlike Pinterest, where GENDER and AGE_BUCKET are
+reported as two independent breakdowns of the same total and combining them
+into one table required a demographic_type discriminator column (see
+pinterest_ads_gender_to_iceberg_glue_job.py / pinterest_ads_age_to_iceberg_glue_job.py's
+docstrings for that whole story). Meta's version of this table has no
+equivalent double-counting footgun: every row is already scoped to one
+(age, gender) pair, so SUM(spend) for an (ad_id, stat_date) just works, no
+WHERE clause or discriminator column needed.
 
 Glue job parameters expected (set as job arguments):
 
@@ -21,7 +35,7 @@ Glue job parameters expected (set as job arguments):
   --AWS_REGION                e.g. us-east-1
   --ICEBERG_CATALOG           Glue Data Catalog name registered as an Iceberg catalog, e.g. "glue_catalog"
   --ICEBERG_DATABASE          target database name, e.g. "marketing"
-  --ICEBERG_TABLE             target table name, e.g. "meta_ad_set_performance"
+  --ICEBERG_TABLE             target table name, e.g. "meta_ad_demographics_performance"
   --ICEBERG_WAREHOUSE_PATH    s3://bucket/prefix for the Iceberg warehouse
 
 Optional job parameters:
@@ -42,15 +56,15 @@ Also pass, at the job level (not in this script):
 
 This script is written for Glue 4.0+ (Spark 3.3+, native Iceberg support).
 
-Design notes specific to the ad set level:
-- **Asynchronous reporting, not a synchronous GET** -- one async report job
-  per account, submitted and polled via batched Graph API calls. See
-  common/meta_async_insights.py for the flow, and
-  meta_ads_to_iceberg_glue_job.py's docstring plus ../README.md for why.
-- One report per account, not one per ad set. level=adset returns
-  ad-set-level rows for *every* ad set in the account -- see
-  meta_ads_to_iceberg_glue_job.py's docstring for the full explanation of
-  why this differs from Pinterest's list-then-batch pattern.
+Design notes:
+- `age` and `gender` are both breakdown-derived fields -- Meta adds them
+  directly into each row under keys matching the breakdown names, the same
+  mechanism used by da_mkt_meta_ad_dma_performance_datalake.py's market breakdown.
+  They're excluded from the `fields` request (API_FIELDS) and supplied via
+  the separate `breakdowns` parameter instead.
+- age values come back as Meta's standard bucket strings (e.g. "25-34");
+  gender as "male"/"female"/"unknown". Both already human-readable, so no
+  reference/lookup table is needed (unlike Pinterest's DMA codes).
 """
 
 import os
@@ -74,13 +88,14 @@ from meta_schema import build_table
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("meta_ad_sets_to_iceberg")
+logger = logging.getLogger("da_mkt_meta_ad_demographic_performance_datalake")
 
-LEVEL = "adset"
+LEVEL = "ad"
+BREAKDOWNS = ["age", "gender"]
 
 # Metric fields, deliberately kept identical across meta_ads/, meta_campaigns/,
 # meta_ad_sets/, meta_ads_dma/, and meta_ads_demographics/ jobs -- see
-# meta_ads_to_iceberg_glue_job.py for the full rationale. Verified against
+# da_mkt_meta_ad_performance_datalake.py for the full rationale. Verified against
 # Meta's live Ads Insights reference docs on 2026-08-19.
 METRIC_FIELD_SPECS = [
     ("spend", "spend", "double"),
@@ -103,16 +118,22 @@ METRIC_FIELD_SPECS = [
 ]
 
 FIELD_SPECS = [
+    ("ad_id", "ad_id", "string"),
+    ("ad_name", "ad_name", "string"),
     ("adset_id", "ad_set_id", "string"),
     ("adset_name", "ad_set_name", "string"),
     ("campaign_id", "campaign_id", "string"),
     ("campaign_name", "campaign_name", "string"),
+    ("age", "age", "string"),        # breakdown-derived -- see module docstring
+    ("gender", "gender", "string"),  # breakdown-derived -- see module docstring
     ("date_start", "stat_date", "date"),
 ] + METRIC_FIELD_SPECS
 
 SCHEMA, ICEBERG_COLUMNS, to_row = build_table(FIELD_SPECS)
-API_FIELDS = [f[0] for f in FIELD_SPECS]
-KEY_COLUMNS = ["ad_account_id", "ad_set_id", "stat_date"]
+# age/gender are supplied via `breakdowns`, not `fields` -- requesting them
+# in both would be redundant/invalid, so they're excluded here.
+API_FIELDS = [f[0] for f in FIELD_SPECS if f[0] not in BREAKDOWNS]
+KEY_COLUMNS = ["ad_account_id", "ad_id", "age", "gender", "stat_date"]
 PARTITION_EXPR = "days(stat_date)"
 
 REQUIRED_ARGS = [
@@ -159,19 +180,19 @@ def main():
         return
 
     start_date, end_date = resolve_date_range(args)
-    logger.info("Pulling Meta ad set insights for %s..%s across %d account(s)",
+    logger.info("Pulling Meta ad demographic (age x gender) insights for %s..%s across %d account(s)",
                 start_date, end_date, len(ad_account_ids))
     ingested_at = datetime.now(timezone.utc)
 
     rows_by_account = run_insights_reports(ad_account_ids, LEVEL, start_date, end_date,
-                                           access_token, API_FIELDS)
+                                           access_token, API_FIELDS, breakdowns=BREAKDOWNS)
 
     all_rows = []
     for ad_account_id, insights in rows_by_account.items():
         for record in insights:
             all_rows.append(to_row(ad_account_id, record, ingested_at))
 
-    logger.info("Fetched %d ad-set-day rows across %d ad account(s)", len(all_rows), len(ad_account_ids))
+    logger.info("Fetched %d ad-demographic-day rows across %d ad account(s)", len(all_rows), len(ad_account_ids))
 
     if not all_rows:
         logger.info("No data returned for %s..%s, nothing to write", start_date, end_date)
@@ -180,7 +201,7 @@ def main():
 
     df = spark.createDataFrame(all_rows, schema=SCHEMA)
     upsert(spark, df, full_table_name, ICEBERG_COLUMNS, KEY_COLUMNS,
-           PARTITION_EXPR, temp_view_name="meta_ad_sets_source")
+           PARTITION_EXPR, temp_view_name="meta_ads_demographics_source")
 
     job.commit()
 
